@@ -28,7 +28,6 @@ func main() {
 	log.WithFields(log.Fields{"context": "main"}).Debug("starting")
 
 	wg.Add(3)
-
 	go runProxy(ctx, wg)
 	go runSubscriber(ctx, wg)
 	go runPublisher(ctx, wg)
@@ -37,21 +36,23 @@ func main() {
 	signal.Notify(termChan, syscall.SIGINT, syscall.SIGTERM)
 	<-termChan
 
-	log.WithFields(log.Fields{"context": "main"}).Debug("terminated")
+	log.WithFields(log.Fields{"context": "main"}).Debug("signal received")
 
 	cancelFunc()
 	wg.Wait()
+
+	log.WithFields(log.Fields{"context": "main"}).Debug("exiting")
 }
 
 func runProxy(ctx context.Context, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	done := make(chan bool)
+	log.WithFields(log.Fields{"context": "proxy"}).Debug("setup")
 
 	go func() {
-		var proxy *czmq.Proxy
-
-		if proxy = czmq.NewProxy(); proxy == nil {
+		proxy := czmq.NewProxy()
+		if proxy == nil {
 			log.Panic("failed to create proxy")
 		}
 		defer proxy.Destroy()
@@ -64,59 +65,63 @@ func runProxy(ctx context.Context, wg *sync.WaitGroup) {
 		}
 
 		<-done
+		log.WithFields(log.Fields{"context": "proxy"}).Debug("exiting routine")
 	}()
 
+	log.WithFields(log.Fields{"context": "proxy"}).Debug("blocking")
 	<-ctx.Done()
+	log.WithFields(log.Fields{"context": "proxy"}).Debug("received shutdown")
 	done <- true
+	log.WithFields(log.Fields{"context": "proxy"}).Debug("terminated")
 }
 
 func runPublisher(ctx context.Context, wg *sync.WaitGroup) {
 	defer wg.Done()
+	running := true
+	log.WithFields(log.Fields{"context": "publisher"}).Debug("setup")
+
+	publisher, err := czmq.NewPub(publisherEndpoint)
+	if err != nil {
+		log.Panic(err)
+	}
+	defer publisher.Destroy()
 
 	go func() {
-		publisher, err := czmq.NewPub(publisherEndpoint)
-		if publisher == nil {
-			log.Panic("failed to create publisher")
-		}
-		if err != nil {
-			log.Panic(err)
-		}
-		defer publisher.Destroy()
-
-		for {
-			log.WithFields(log.Fields{"socket": "publisher"}).Info("publishing data...")
+		for running {
 			publisher.SendFrame([]byte("test"), czmq.FlagNone)
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(500 * time.Millisecond)
 		}
 	}()
 
 	<-ctx.Done()
+	log.WithFields(log.Fields{"context": "publisher"}).Debug("received shutdown")
+	running = false
+	log.WithFields(log.Fields{"context": "publisher"}).Debug("terminated")
 }
 
 func runSubscriber(ctx context.Context, wg *sync.WaitGroup) {
 	defer wg.Done()
+	running := true
+	log.WithFields(log.Fields{"context": "subscriber"}).Debug("setup")
+
+	subscriber, err := czmq.NewSub(subscriberEndpoint, "")
+	if err != nil {
+		log.Panic(err)
+	}
+	defer subscriber.Destroy()
+
+	poller, err := czmq.NewPoller()
+	if err != nil {
+		log.Panic("failed to create poller")
+	}
+	defer poller.Destroy()
+
+	if err = poller.Add(subscriber); err != nil {
+		log.Panic("failed to add subscriber to poller")
+	}
 
 	go func() {
-		subscriber, err := czmq.NewSub(subscriberEndpoint, "")
-		if subscriber == nil {
-			log.Panic("failed to create subscriber")
-		}
-		if err != nil {
-			log.Panic(err)
-		}
-		defer subscriber.Destroy()
-
-		poller, err := czmq.NewPoller()
-		if err != nil {
-			log.Panic("failed to create poller")
-		}
-		defer poller.Destroy()
-
-		if err = poller.Add(subscriber); err != nil {
-			log.Panic("failed to add subscriber to poller")
-		}
-
-		for {
+		for running {
 			log.WithFields(log.Fields{"socket": "subscriber"}).Info("waiting for data...")
 
 			socket, err := poller.Wait(1000)
@@ -137,4 +142,7 @@ func runSubscriber(ctx context.Context, wg *sync.WaitGroup) {
 	}()
 
 	<-ctx.Done()
+	log.WithFields(log.Fields{"context": "subscriber"}).Debug("received shutdown")
+	running = false
+	log.WithFields(log.Fields{"context": "subscriber"}).Debug("terminated")
 }
